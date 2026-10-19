@@ -17,6 +17,14 @@ def _hook_command(event: str, reminder: str) -> str:
         },
         separators=(",", ":"),
     )
+    if event != "SubagentStop":
+        script = (
+            "import json,sys;"
+            "event=json.load(sys.stdin);"
+            f"payload={payload!r};"
+            "print(payload) if not event.get('agent_id') else None"
+        )
+        return f"python3 -c {shlex.quote(script)}"
     return f"printf '%s\\n' {shlex.quote(payload)}"
 
 
