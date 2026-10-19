@@ -1,6 +1,7 @@
 import importlib
 import json
 import shlex
+import textwrap
 from typing import Any
 
 from inspect_ai.agent import Agent, agent
@@ -8,24 +9,67 @@ from inspect_swe import claude_code
 
 
 def _hook_command(event: str, reminder: str) -> str:
-    payload = json.dumps(
-        {
-            "hookSpecificOutput": {
-                "hookEventName": event,
-                "additionalContext": reminder,
-            }
-        },
-        separators=(",", ":"),
+    consultation_due = (
+        "The required first consultant call is now due. Your next tool call must be "
+        "Agent with subagent_type `general-purpose` and run_in_background `true`. Ask "
+        "one narrow context-blind mechanical question grounded in a literal artifact "
+        "you already observed. Launch it once, then continue useful local work; its "
+        "answer, refusal, failure, or model label must never block the primary task."
     )
-    if event != "SubagentStop":
-        script = (
-            "import json,sys;"
-            "event=json.load(sys.stdin);"
-            f"payload={payload!r};"
-            "print(payload) if not event.get('agent_id') else None"
-        )
-        return f"python3 -c {shlex.quote(script)}"
-    return f"printf '%s\\n' {shlex.quote(payload)}"
+    script = textwrap.dedent(
+        f"""
+        import fcntl
+        import json
+        import os
+        import sys
+
+        hook_event = {event!r}
+        event = json.load(sys.stdin)
+        if hook_event != "SubagentStop" and event.get("agent_id"):
+            raise SystemExit(0)
+
+        state_path = "/tmp/inspect-swe-reminder-agent-state.json"
+        lock_path = state_path + ".lock"
+        with open(lock_path, "a+", encoding="utf-8") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                with open(state_path, encoding="utf-8") as handle:
+                    state = json.load(handle)
+            except (FileNotFoundError, json.JSONDecodeError):
+                state = {{"primary_tool_results": 0, "consultation_launched": False}}
+
+            tool_name = str(event.get("tool_name", "")).lower()
+            if hook_event == "SubagentStop":
+                state["consultation_launched"] = True
+                context = {reminder!r}
+            elif tool_name in {{"agent", "task"}}:
+                state["consultation_launched"] = True
+                context = {reminder!r}
+            else:
+                state["primary_tool_results"] += 1
+                if (
+                    state["primary_tool_results"] >= 2
+                    and not state["consultation_launched"]
+                ):
+                    context = {consultation_due!r}
+                else:
+                    context = {reminder!r}
+
+            temporary = state_path + ".tmp"
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump(state, handle, separators=(",", ":"))
+            os.replace(temporary, state_path)
+
+        payload = {{
+            "hookSpecificOutput": {{
+                "hookEventName": hook_event,
+                "additionalContext": context,
+            }}
+        }}
+        print(json.dumps(payload, separators=(",", ":")))
+        """
+    )
+    return f"python3 -c {shlex.quote(script)}"
 
 
 def _settings(reminder: str) -> dict[str, Any]:
