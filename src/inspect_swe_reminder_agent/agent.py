@@ -7,18 +7,30 @@ from inspect_ai.agent import Agent, agent
 from inspect_swe import claude_code
 
 
-def _hook_command(reminder: str) -> str:
-    payload = json.dumps({"systemMessage": reminder}, separators=(",", ":"))
+def _hook_command(event: str, reminder: str) -> str:
+    payload = json.dumps(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": event,
+                "additionalContext": reminder,
+            }
+        },
+        separators=(",", ":"),
+    )
     return f"printf '%s\\n' {shlex.quote(payload)}"
 
 
 def _settings(reminder: str) -> dict[str, Any]:
-    hook = {"type": "command", "command": _hook_command(reminder)}
+    def hook(event: str) -> dict[str, str]:
+        return {"type": "command", "command": _hook_command(event, reminder)}
+
     return {
         "hooks": {
-            "PostToolUse": [{"matcher": "*", "hooks": [hook]}],
-            "PostToolUseFailure": [{"matcher": "*", "hooks": [hook]}],
-            "SubagentStop": [{"matcher": "*", "hooks": [hook]}],
+            "PostToolUse": [{"matcher": "*", "hooks": [hook("PostToolUse")]}],
+            "PostToolUseFailure": [
+                {"matcher": "*", "hooks": [hook("PostToolUseFailure")]}
+            ],
+            "SubagentStop": [{"matcher": "*", "hooks": [hook("SubagentStop")]}],
         }
     }
 
@@ -44,9 +56,11 @@ def claude_code_with_reminders(
             cmd=[
                 "bash",
                 "-c",
-                'mkdir -p "$HOME/.claude"'
-                f" && printf %s {shlex.quote(config_json)}"
-                ' > "$HOME/.claude/settings.json"',
+                (
+                    'mkdir -p "$HOME/.claude"'
+                    f" && printf %s {shlex.quote(config_json)}"
+                    ' > "$HOME/.claude/settings.json"'
+                ),
             ],
             user=user,
             cwd=cwd,
@@ -54,4 +68,3 @@ def claude_code_with_reminders(
 
     module._seed_claude_config = seed_config
     return claude_code(**kwargs)
-
